@@ -2,3 +2,5 @@ fastapi
 uvicorn[standard]
 python-multipart
 rank-bm25
+httpx
+python-dotenv
