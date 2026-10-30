@@ -4,3 +4,5 @@ python-multipart
 rank-bm25
 sentence-transformers
 numpy
+httpx
+python-dotenv
