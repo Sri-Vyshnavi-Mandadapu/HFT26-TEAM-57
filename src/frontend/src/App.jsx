@@ -29,7 +29,15 @@ import {
 
 } from "lucide-react";
 
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
+import python from "react-syntax-highlighter/dist/esm/languages/prism/python";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+
 import "./App.css";
+
+SyntaxHighlighter.registerLanguage("python", python);
 
 const API_URL =
 
@@ -89,6 +97,16 @@ async function apiRequest(path, options = {}) {
 
   return data;
 
+}
+
+function getResultKind(result) {
+  const kind = String(
+    result.symbol_type || result.kind || result.type || ""
+  ).toLowerCase();
+
+  if (kind.includes("class")) return "Class";
+  if (kind.includes("function")) return "Function";
+  return "";
 }
 
 function App() {
@@ -399,12 +417,6 @@ function App() {
 
   }
 
-  const lines = selectedResult
-
-    ? String(selectedResult.code || "").split("\n")
-
-    : [];
-
   const repoName = file
 
     ? file.name.replace(/\.zip$/i, "")
@@ -431,6 +443,8 @@ function App() {
 
             title="Explorer"
 
+            aria-label="Open explorer"
+
             onClick={() => {
 
               setActiveTab("explorer");
@@ -455,6 +469,8 @@ function App() {
 
             title="Search"
 
+            aria-label="Open search"
+
             onClick={() => {
 
               setActiveTab("search");
@@ -474,6 +490,8 @@ function App() {
             className="activity-button"
 
             title="Show or hide sidebar"
+
+            aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
 
             onClick={() => setSidebarOpen(!sidebarOpen)}
 
@@ -1187,6 +1205,8 @@ function App() {
 
                         }`}
 
+                        aria-pressed={selectedIndex === index}
+
                         onClick={() =>
 
                           selectResult(index)
@@ -1206,6 +1226,14 @@ function App() {
                               "Code snippet"}
 
                           </strong>
+
+                          {getResultKind(result) && (
+                            <span
+                              className={`result-kind ${getResultKind(result).toLowerCase()}`}
+                            >
+                              {getResultKind(result)}
+                            </span>
+                          )}
 
                         </div>
 
@@ -1229,9 +1257,9 @@ function App() {
 
                             "number" && (
 
-                            <span>
+                            <span className="relevance-score">
 
-                              Score{" "}
+                              Relevance{" "}
 
                               {result.score.toFixed(2)}
 
@@ -1309,6 +1337,8 @@ function App() {
 
                       title="Copy code"
 
+                      aria-label={copied ? "Code copied" : "Copy code"}
+
                       onClick={handleCopy}
 
                     >
@@ -1357,33 +1387,24 @@ function App() {
 
                     <div className="code-scroll">
 
-                      {lines.map((line, index) => (
-
-                        <div
-
-                          className="source-line"
-
-                          key={index}
-
-                        >
-
-                          <span className="line-number">
-
-                            {Number(
-
-                              selectedResult.start_line ||
-
-                                1
-
-                            ) + index}
-
-                          </span>
-
-                          <code>{line || " "}</code>
-
-                        </div>
-
-                      ))}
+                      <SyntaxHighlighter
+                        language="python"
+                        style={oneDark}
+                        showLineNumbers
+                        startingLineNumber={Number(selectedResult.start_line) || 1}
+                        className="source-code-highlight"
+                        lineNumberStyle={{ color: "#737d8c", minWidth: "3.5em" }}
+                        customStyle={{
+                          margin: 0,
+                          padding: "15px 0",
+                          background: "transparent",
+                          minWidth: "max-content",
+                          fontSize: "12px",
+                          lineHeight: 1.8,
+                        }}
+                      >
+                        {String(selectedResult.code || "")}
+                      </SyntaxHighlighter>
 
                     </div>
 
@@ -1489,13 +1510,25 @@ function App() {
 
             </div>
 
-            <div className="explanation-box">
+            <div className={`explanation-box ${loadingExplain ? "is-loading" : ""}`}>
 
-              {explanation ? (
+              {loadingExplain ? (
+
+                <div className="explanation-loading" role="status">
+
+                  <Loader2 size={18} className="spin" />
+
+                  <span>Reviewing the retrieved code and preparing an explanation...</span>
+
+                </div>
+
+              ) : explanation ? (
 
                 <div className="explanation-content">
 
-                  {explanation}
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {explanation}
+                  </ReactMarkdown>
 
                 </div>
 
@@ -1507,11 +1540,8 @@ function App() {
 
                   <span>
 
-                    Search your repository and generate
-
-                    an explanation to understand how
-
-                    the code works.
+                    Search your repository, then explain the retrieved code to understand
+                    how the relevant functions and classes work together.
 
                   </span>
 
