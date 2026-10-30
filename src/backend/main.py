@@ -3,10 +3,9 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from .indexer import index_repository
-
+from .retriever import CodeRetriever
 from pathlib import Path
 import tempfile
-from .indexer import index_repository
 from .llm import explain
 
 app = FastAPI(title="RepoLens AI")
@@ -23,7 +22,7 @@ app.add_middleware(
 
 # Stores indexed code records
 indexed_records = []
-
+retriever = None
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 
 
@@ -32,11 +31,6 @@ MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 
 
 
-def search(query: str, records: list[dict], top_k: int = 5):
-    return [
-        {**record, "score": 1.0}
-        for record in records[:top_k]
-    ]
 
 
 
@@ -69,7 +63,7 @@ def get_status():
 
 @app.post("/api/index")
 async def upload_repository(file: UploadFile = File(...)):
-    global indexed_records
+    global indexed_records, retriever
 
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(
@@ -104,7 +98,14 @@ async def upload_repository(file: UploadFile = File(...)):
                 detail="No supported source files found"
             )
 
+        new_retriever = CodeRetriever(
+            records,
+            use_semantic=True,
+            use_reranker=False
+        )
+
         indexed_records = records
+        retriever = new_retriever
 
     return {
         "message": "Repository indexed successfully",
@@ -114,16 +115,16 @@ async def upload_repository(file: UploadFile = File(...)):
 
 @app.post("/api/search")
 def search_repository(request: SearchRequest):
-    if not indexed_records:
+    if retriever is None:
         raise HTTPException(
             status_code=400,
             detail="Please upload a repository first"
         )
 
-    results = search(
-        request.query,
-        indexed_records,
-        request.top_k
+    results = retriever.search(
+        query=request.query,
+        top_k=request.top_k,
+        mode="hybrid"
     )
 
     return {
