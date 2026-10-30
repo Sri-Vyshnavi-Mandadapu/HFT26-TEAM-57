@@ -6,6 +6,8 @@ from .indexer import index_repository
 
 from pathlib import Path
 import tempfile
+from .indexer import index_repository
+from .llm import explain
 
 app = FastAPI(title="RepoLens AI")
 
@@ -33,9 +35,6 @@ def search(query: str, records: list[dict], top_k: int = 5):
         for record in records[:top_k]
     ]
 
-
-def explain(query: str, results: list[dict]) -> str:
-    return "Mock explanation: this function handles user login."
 
 
 # Request models
@@ -154,6 +153,9 @@ def explain_code(request: ExplainRequest):
             detail="No verified source evidence provided"
         )
 
-    explanation = explain(request.query, verified)
-
+    explanation = explain(
+        query=request.query,
+        retrieved_results=verified,
+        indexed_records=indexed_records
+    )
     return {"explanation": explanation}
