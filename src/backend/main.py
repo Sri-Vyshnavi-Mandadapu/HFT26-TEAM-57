@@ -2,6 +2,8 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from .indexer import index_repository
+
 from pathlib import Path
 import tempfile
 
@@ -23,21 +25,6 @@ MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 # TEMPORARY FUNCTIONS
 # Replace with teammates' modules during integration.
 
-def index_repository(zip_path: str) -> list[dict]:
-    return [
-        {
-            "file_path": "src/auth.py",
-            "symbol": "login_user",
-            "type": "function",
-            "start_line": 1,
-            "end_line": 3,
-            "code": (
-                "def login_user(username, password):\n"
-                "    return verify_password(username, password)"
-            ),
-            "language": "python"
-        }
-    ]
 
 
 def search(query: str, records: list[dict], top_k: int = 5):
