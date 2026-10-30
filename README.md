@@ -86,3 +86,26 @@ All teams must follow the official fork-and-pull-request workflow:
 * **Upstream Protection**: Do not push directly to this repository's main branch. All evaluation will be conducted on your submitted Pull Request.
 * **Original Work**: All code submitted must be developed during the hackathon timeline. Open-source libraries and frameworks are welcomed with proper attribution.
 * **Code Freeze**: Final Pull Requests must be submitted before the designated hackathon submission deadline.
+
+
+# RepoLens AI
+
+AI-powered source-code repository explorer for new contributors.
+
+## Features
+- ZIP repository upload and code indexing
+- Python AST-based function and class extraction
+- BM25 and optional semantic code retrieval
+- Exact source file paths and line ranges
+- AI explanations grounded in retrieved code
+- Retrieval evaluation on 10 verified questions
+
+## Tech Stack
+Python, FastAPI, BM25, Sentence Transformers,
+Featherless/Gemini, React, Tailwind CSS.
+
+## Backend Setup
+
+```powershell
+pip install -r src/backend/requirements.txt
+python -m uvicorn src.backend.main:app --reload
