@@ -1,0 +1,31 @@
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+::selection {
+  background: #6950bc;
+  color: white;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #34384c;
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #121521;
+}
