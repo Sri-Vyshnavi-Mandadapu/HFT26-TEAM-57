@@ -6,7 +6,7 @@ from typing import Any, Iterable
 import numpy as np
 
 try:
-    from rank_bm25 import BM25Okapi
+    from rank_bm25 import BM25Plus
 except ImportError as exc:
     raise ImportError("Install rank-bm25: pip install rank-bm25") from exc
 
@@ -89,8 +89,8 @@ class CodeRetriever:
         self.documents = [f[2] for f in fields]
         self.name_tokens = [tokenize(x) for x in self.name_documents]
         self.body_tokens = [tokenize(x) for x in self.body_documents]
-        self.bm25_names = BM25Okapi(self.name_tokens) if self.name_tokens else None
-        self.bm25_bodies = BM25Okapi(self.body_tokens) if self.body_tokens else None
+        self.bm25_names = BM25Plus(self.name_tokens) if self.name_tokens else None
+        self.bm25_bodies = BM25Plus(self.body_tokens) if self.body_tokens else None
 
         if use_semantic and self.records:
             try:
@@ -230,7 +230,17 @@ class CodeRetriever:
             name_factor, path_factor = self._field_factors(query_tokens, record)
             fused[idx] *= name_factor * path_factor * self._placeholder_factor(record)
 
-        candidates = [int(i) for i in np.argsort(-fused, kind="stable") if fused[i] > 0]
+        # Ensure exact function-name matches are included,
+        # even when BM25 produces zero scores.
+        for idx, record in enumerate(self.records):
+            if self._exact_identifier_match(query, record) > 0 and fused[idx] <= 0:
+                fused[idx] = 1.0
+
+        candidates = [
+            int(i)
+            for i in np.argsort(-fused, kind="stable")
+            if fused[i] > 0
+        ]
         reranker_used = False
         if self.reranker is not None and candidates:
             subset = candidates[:min(len(candidates), max(top_k, rerank_pool))]

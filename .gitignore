@@ -21,3 +21,4 @@ dist/
 *.log
 temp/
 uploads/
+.embedding_cache/
