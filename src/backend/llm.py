@@ -7,6 +7,11 @@ import httpx
 
 from dotenv import load_dotenv
 
+
+# ==================================================
+# 1. LOAD ENVIRONMENT VARIABLES
+# ==================================================
+
 load_dotenv()
 
 API_KEY = os.getenv("FEATHERLESS_API_KEY")
@@ -16,26 +21,38 @@ BASE_URL = os.getenv(
     "https://api.featherless.ai/v1"
 )
 
-MODEL = os.getenv("FEATHERLESS_MODEL")
+MODEL = os.getenv(
+    "FEATHERLESS_MODEL",
+    "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+)
+
+
+# ==================================================
+# 2. CONFIGURATION
+# ==================================================
 
 MAX_SNIPPETS = 10
 MAX_CODE_LENGTH = 5000
 MAX_RELATED_FUNCTIONS = 4
 
+INSUFFICIENT_EVIDENCE = (
+    "I couldn't verify the answer from the retrieved source code. "
+    "The available code snippets do not provide enough evidence "
+    "to explain this functionality. Try searching for a more "
+    "specific function or retrieving additional relevant code."
+)
 
-# --------------------------------------------------
-# 1. FIND FUNCTION CALLS IN CODE
-# --------------------------------------------------
+
+# ==================================================
+# 3. FIND FUNCTION CALLS USING AST
+# ==================================================
 
 def find_called_functions(code):
-    """
-    Find function names called inside a Python code snippet.
-    Does not execute the code.
-    """
 
     called_functions = set()
 
     try:
+
         tree = ast.parse(textwrap.dedent(code))
 
         for node in ast.walk(tree):
@@ -54,188 +71,301 @@ def find_called_functions(code):
     return called_functions
 
 
-# --------------------------------------------------
-# 2. EXPAND RELATED FUNCTIONS
-# --------------------------------------------------
+# ==================================================
+# 4. EXPAND RELATED FUNCTIONS
+# ==================================================
 
 def expand_related_functions(
     retrieved_results,
     indexed_records,
     max_related=MAX_RELATED_FUNCTIONS
 ):
-    """
-    Find implementations of functions called by retrieved code.
-    Add those implementations to the evidence.
-    """
 
     expanded_results = list(retrieved_results)
 
-    existing = {
+    seen = {
         (
-            record.get("file_path"),
-            record.get("symbol"),
-            record.get("start_line")
+            item.get("file_path"),
+            item.get("symbol"),
+            item.get("start_line")
         )
-        for record in retrieved_results
+        for item in expanded_results
     }
 
     related_count = 0
 
-    for record in retrieved_results:
+    for result in retrieved_results:
 
-        if record.get("language", "python").lower() != "python":
-            continue
+        if related_count >= max_related:
+            break
 
         called_functions = find_called_functions(
-            record.get("code", "")
+            result.get("code", "")
         )
+
+        if not called_functions:
+            continue
+
+        # Find Python function implementations.
+        candidates = []
+
+        for record in indexed_records:
+
+            if record.get("language", "python").lower() != "python":
+                continue
+
+            record_type = (
+                record.get("type")
+                or record.get("kind")
+                or ""
+            )
+
+            if record_type not in (
+                "function",
+                "async_function"
+            ):
+                continue
+
+            if record.get("symbol") in called_functions:
+                candidates.append(record)
 
         for function_name in called_functions:
 
-            for candidate in indexed_records:
+            if related_count >= max_related:
+                break
 
-                if candidate.get("symbol") != function_name:
-                    continue
+            matching_records = [
+                record for record in candidates
+                if record.get("symbol") == function_name
+            ]
 
-                # Only add function implementations.
-                if candidate.get("type", "").lower() not in (
-                    "function",
-                    "async_function"
-                ):
-                    continue
+            # Prefer a unique function in the same file.
+            same_file_matches = [
+                record for record in matching_records
+                if record.get("file_path") == result.get("file_path")
+            ]
 
-                if candidate.get("language", "python").lower() != "python":
-                    continue
+            if len(same_file_matches) == 1:
 
-                key = (
-                    candidate.get("file_path"),
-                    candidate.get("symbol"),
-                    candidate.get("start_line")
-                )
+                matching_record = same_file_matches[0]
 
-                if key in existing:
-                    continue
+            elif len(same_file_matches) > 1:
 
-                related_record = candidate.copy()
-                related_record["match_reason"] = "Related function"
+                continue
 
-                expanded_results.append(related_record)
-                existing.add(key)
+            elif len(matching_records) == 1:
 
-                related_count += 1
+                matching_record = matching_records[0]
 
-                if related_count >= max_related:
-                    return expanded_results
+            else:
+
+                # Avoid guessing when function names are ambiguous.
+                continue
+
+            key = (
+                matching_record.get("file_path"),
+                matching_record.get("symbol"),
+                matching_record.get("start_line")
+            )
+
+            if key in seen:
+                continue
+
+            related_record = matching_record.copy()
+
+            related_record["match_reason"] = "Related function"
+
+            expanded_results.append(related_record)
+
+            seen.add(key)
+            related_count += 1
 
     return expanded_results
 
 
-# --------------------------------------------------
-# 3. PREPARE EVIDENCE
-# --------------------------------------------------
+# ==================================================
+# 5. PREPARE EVIDENCE WITH UNIQUE IDS
+# ==================================================
 
-def _prepare_evidence(retrieved_results):
-    """
-    Prepare code snippets and assign evidence IDs.
-    """
+def _prepare_evidence(results):
 
     evidence = []
 
-    for i, result in enumerate(
-        retrieved_results[:MAX_SNIPPETS],
-        start=1
-    ):
+    for item in results:
 
-        code = result.get("code", "")
+        code = item.get("code", "")
+        symbol = item.get("symbol", "")
 
-        if not code:
+        if not code or not symbol:
             continue
 
+        if len(evidence) >= MAX_SNIPPETS:
+            break
+
+        evidence_id = f"E{len(evidence) + 1}"
+
         evidence.append({
-            "id": f"E{i}",
-            "file_path": result.get("file_path", "Unknown file"),
-            "symbol": result.get("symbol", "Unknown symbol"),
-            "type": result.get("type", "code"),
-            "start_line": result.get("start_line", "?"),
-            "end_line": result.get("end_line", "?"),
+
+            "id": evidence_id,
+
+            "file_path": item.get(
+                "file_path",
+                "Unknown"
+            ),
+
+            "symbol": symbol,
+
+            "type": (
+                item.get("type")
+                or item.get("kind")
+                or "Unknown"
+            ),
+
+            "start_line": item.get(
+                "start_line",
+                "?"
+            ),
+
+            "end_line": item.get(
+                "end_line",
+                "?"
+            ),
+
             "code": code[:MAX_CODE_LENGTH]
+
         })
 
     return evidence
 
 
-# --------------------------------------------------
-# 4. BUILD LLM PROMPT
-# --------------------------------------------------
-
+# ==================================================
+# 6. BUILD LLM PROMPT
+# ==================================================
 
 def _build_prompt(query, evidence):
 
     evidence_text = ""
 
-    available_functions = [
-        item["symbol"] for item in evidence
-    ]
+    available_functions = []
 
     for item in evidence:
+
+        symbol = item["symbol"]
+
+        if symbol not in available_functions:
+            available_functions.append(symbol)
+
         evidence_text += f"""
 [EVIDENCE {item['id']}]
+
 File: {item['file_path']}
-Function: {item['symbol']}
+Function: {symbol}
+Type: {item['type']}
 Lines: {item['start_line']}-{item['end_line']}
 
 Code:
 {item['code']}
+
 """
 
+    functions_text = ", ".join(available_functions)
+
     prompt = f"""
-You are RepoLens AI, a code explanation assistant.
+You are RepoLens AI, a source-code explanation assistant.
+
+Your task is to explain the ACTUAL implementation
+of a repository using the supplied source code.
 
 QUESTION:
 {query}
 
-FUNCTION IMPLEMENTATIONS PRESENT IN EVIDENCE:
-{', '.join(available_functions)}
+FUNCTIONS PRESENT IN THE EVIDENCE:
+{functions_text}
 
 RETRIEVED SOURCE CODE:
+
 {evidence_text}
+
 
 STRICT RULES:
 
-1. Use only the supplied source code.
-2. Read the actual implementation before explaining a function.
-3. A function listed under FUNCTION IMPLEMENTATIONS
-   is available. Never call it missing.
-4. Do not invent internal behavior.
-5. Distinguish function calls from their implementations.
-6. Every numbered explanation step MUST contain
-   a valid evidence ID such as [E1].
-7. Use only evidence IDs supplied above.
-8. If a function implementation is available,
-   explain what its actual code does.
-9. If a called function implementation is unavailable,
-   explicitly mention that it was not included in the evidence.
-10. Do not generate a Sources section.
-    The application will add verified sources.
-11. Do not claim a function extracts, validates, filters,
-    or parses data unless its implementation demonstrates this.
-12. Keep the explanation simple and concise.
+1. Use ONLY the supplied source code as evidence.
 
-ANSWER FORMAT:
+2. Read the actual function implementation before explaining it.
 
-The process works as follows:
+3. Never invent functions, files, variables, classes,
+   database operations, APIs, or implementation details.
 
-1. Explain the first operation. [E1]
-2. Explain the next operation. [E2]
-3. Explain the final operation. [E3]
+4. Never assume that common features such as registration,
+   login, JWT, authentication, sessions, or middleware exist.
 
-Missing implementation details:
-Mention only functions whose implementations are genuinely
-absent from the supplied evidence.
+5. Do not generate hypothetical code examples.
 
-IMPORTANT:
-Do not copy the example evidence IDs blindly.
-Use the IDs corresponding to the actual code snippets.
+6. Do not generate code blocks.
+
+7. Do not describe a feature unless the supplied code
+   demonstrates that feature.
+
+8. Never invent relationships between independent functions.
+
+9. Never claim that one function calls another unless
+   the actual implementation contains that function call.
+
+10. A function being present in the evidence does not mean
+    that another function uses or calls it.
+
+11. Distinguish between an actual implementation and
+    a function that is merely mentioned.
+
+12. Every sentence explaining code MUST mention the
+    corresponding actual function name.
+
+13. Every explanation sentence MUST include the correct
+    evidence ID, such as [E1].
+
+14. Use ONLY the evidence IDs supplied above.
+
+15. Never create new evidence IDs.
+
+16. If the retrieved code does not answer the question,
+    clearly state that the evidence is insufficient.
+
+17. If only part of the question can be answered,
+    explain only the supported part.
+
+18. Do not fill missing implementation details using
+    general programming knowledge.
+
+19. Do not assume that two functions are connected
+    simply because their names are related.
+
+20. Do not generate a Sources section.
+    The application will generate source references.
+
+21. Keep the explanation concise and beginner-friendly.
+
+22. Do not repeat the same explanation.
+
+23. Do not provide a generic programming tutorial.
+
+24. Do not claim that data is stored securely, validated,
+    encrypted, or authenticated unless the code demonstrates it.
+
+25. If there is insufficient evidence, return ONLY:
+    INSUFFICIENT_EVIDENCE
+
+
+OUTPUT FORMAT:
+
+Write a short explanation in plain text.
+
+Every sentence describing implementation must:
+- Mention the actual function name.
+- Include the correct evidence ID.
+- Describe only what the supplied code demonstrates.
+
+Do not use headings, numbered steps, bullet points,
+or code examples.
 
 ANSWER:
 """
@@ -243,50 +373,44 @@ ANSWER:
     return prompt
 
 
-
-# --------------------------------------------------
-# 5. CALL FEATHERLESS API
-# --------------------------------------------------
+# ==================================================
+# 7. CALL FEATHERLESS API
+# ==================================================
 
 def _call_llm(prompt):
-    """
-    Send the prompt to the Featherless API.
-    """
 
     if not API_KEY:
-        raise ValueError(
-            "FEATHERLESS_API_KEY is missing. Check your .env file."
-        )
 
-    if not MODEL:
         raise ValueError(
-            "FEATHERLESS_MODEL is missing. Add your model ID to .env."
+            "FEATHERLESS_API_KEY is missing. "
+            "Please configure it in your .env file."
         )
 
     url = BASE_URL.rstrip("/") + "/chat/completions"
 
     headers = {
+
         "Authorization": f"Bearer {API_KEY}",
+
         "Content-Type": "application/json"
+
     }
 
     payload = {
+
         "model": MODEL,
+
         "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are RepoLens AI. "
-                    "Explain code accurately using only provided evidence."
-                )
-            },
             {
                 "role": "user",
                 "content": prompt
             }
         ],
+
         "temperature": 0.1,
-        "max_tokens": 800
+
+        "max_tokens": 500
+
     }
 
     response = httpx.post(
@@ -300,148 +424,315 @@ def _call_llm(prompt):
 
     data = response.json()
 
-    return data["choices"][0]["message"]["content"].strip()
+    answer = data["choices"][0]["message"]["content"]
 
+    if not answer or not answer.strip():
 
-# --------------------------------------------------
-# 6. ATTACH VERIFIED SOURCE LOCATIONS
-# --------------------------------------------------
-
-def _attach_sources(answer, evidence):
-    """
-    Attach source locations based on evidence IDs.
-    """
-
-    valid_ids = {
-        item["id"] for item in evidence
-    }
-
-    pattern = r"\[?(E\d+)\]?"
-
-    cited_ids = re.findall(pattern, answer)
-
-    cited_ids = list(dict.fromkeys(
-        eid for eid in cited_ids if eid in valid_ids
-    ))
-
-    if not cited_ids:
-
-        return (
-            answer
-            + "\n\nNote: No valid evidence citation was generated. "
-            "The explanation could not be verified against "
-            "a specific source."
+        raise ValueError(
+            "The LLM returned an empty response."
         )
 
-    # Remove any Sources section generated by the model.
+    return answer.strip()
+
+
+# ==================================================
+# 8. VERIFY FUNCTION-CALL RELATIONSHIPS
+# ==================================================
+
+def _has_verified_call_relationship(sentence, evidence):
+
+    call_words = (
+        r"\b(call|calls|called|calling|invoke|invokes|invoked)\b"
+    )
+
+    if not re.search(
+        call_words,
+        sentence,
+        re.IGNORECASE
+    ):
+        return True
+
+    # Check whether the sentence claims a relationship
+    # between two functions present in the evidence.
+
+    for caller in evidence:
+
+        caller_name = caller["symbol"]
+
+        called_functions = find_called_functions(
+            caller["code"]
+        )
+
+        for callee in evidence:
+
+            callee_name = callee["symbol"]
+
+            if caller_name == callee_name:
+                continue
+
+            # Example: function A calls function B.
+            forward_pattern = (
+                rf"(?<!\w){re.escape(caller_name)}(?!\w)"
+                rf".{{0,100}}?\b(?:calls|invokes)\b"
+                rf".{{0,100}}?"
+                rf"(?<!\w){re.escape(callee_name)}(?!\w)"
+            )
+
+            # Example: function B is called by function A.
+            reverse_pattern = (
+                rf"(?<!\w){re.escape(callee_name)}(?!\w)"
+                rf".{{0,100}}?\b(?:is\s+)?called\s+by\b"
+                rf".{{0,100}}?"
+                rf"(?<!\w){re.escape(caller_name)}(?!\w)"
+            )
+
+            if re.search(
+                forward_pattern,
+                sentence,
+                re.IGNORECASE
+            ):
+
+                return callee_name in called_functions
+
+            if re.search(
+                reverse_pattern,
+                sentence,
+                re.IGNORECASE
+            ):
+
+                return callee_name in called_functions
+
+    # Reject unverified function-call claims.
+    return False
+
+
+# ==================================================
+# 9. ATTACH AND VERIFY SOURCE REFERENCES
+# ==================================================
+
+def _attach_sources(answer, evidence):
+
+    if "INSUFFICIENT_EVIDENCE" in answer.upper():
+
+        return INSUFFICIENT_EVIDENCE
+
+    # Remove any Sources section generated by the LLM.
     answer = re.split(
-        r"\n\s*(?:\*\*)?Sources(?:\*\*)?\s*:",
+        r"\n\s*(?:#{1,6}\s*)?Sources\s*:",
         answer,
         maxsplit=1,
         flags=re.IGNORECASE
     )[0].strip()
 
-    source_text = "\n\n**Sources:**\n"
+    # Remove existing evidence IDs.
+    # The application will attach citations again.
+    answer = re.sub(
+        r"\[E\d+\]",
+        "",
+        answer
+    ).strip()
 
-    for eid in cited_ids:
+    # Split the response into individual sentences.
+    sentences = re.split(
+        r"(?<=[.!?])\s+|\n+",
+        answer
+    )
 
-        item = next(
-            item for item in evidence if item["id"] == eid
+    verified_sentences = []
+
+    used_evidence = {}
+
+    for sentence in sentences:
+
+        sentence = sentence.strip()
+
+        if not sentence:
+            continue
+
+        matched_items = []
+
+        # Find actual function names mentioned in the sentence.
+        for item in evidence:
+
+            symbol = item["symbol"]
+
+            pattern = (
+                rf"(?<!\w){re.escape(symbol)}(?!\w)"
+            )
+
+            if re.search(
+                pattern,
+                sentence
+            ):
+
+                matched_items.append(item)
+
+        # Reject sentences without an evidence function.
+        if not matched_items:
+            continue
+
+        # Verify function-call claims against actual code.
+        if not _has_verified_call_relationship(
+            sentence,
+            evidence
+        ):
+
+            print(
+                "[VERIFICATION] Rejected unsupported claim:",
+                sentence
+            )
+
+            continue
+
+        # Generate citations ourselves.
+        citation_ids = []
+
+        for item in matched_items:
+
+            evidence_id = item["id"]
+
+            if evidence_id not in citation_ids:
+                citation_ids.append(evidence_id)
+
+            used_evidence[evidence_id] = item
+
+        sentence += " " + " ".join(
+            f"[{evidence_id}]"
+            for evidence_id in citation_ids
         )
 
-        source_text += (
-            f"\n- **[{eid}]** `{item['file_path']}`"
-            f" — `{item['symbol']}`"
-            f" (lines {item['start_line']}-{item['end_line']})"
+        verified_sentences.append(sentence)
+
+    # Reject the answer if no sentence passed verification.
+    if not verified_sentences:
+
+        return INSUFFICIENT_EVIDENCE
+
+    answer = " ".join(verified_sentences)
+
+    # Generate Sources section from cited evidence only.
+    sources = []
+
+    for evidence_id, item in used_evidence.items():
+
+        sources.append(
+            f"- [{evidence_id}] "
+            f"`{item['file_path']}` — "
+            f"`{item['symbol']}` "
+            f"(Lines {item['start_line']}-"
+            f"{item['end_line']})"
         )
 
-    return answer + source_text
+    return (
+        answer
+        + "\n\n**Sources:**\n"
+        + "\n".join(sources)
+    )
 
 
-# --------------------------------------------------
-# 7. MAIN EXPLANATION FUNCTION
-# --------------------------------------------------
+# ==================================================
+# 10. MAIN EXPLANATION FUNCTION
+# ==================================================
 
-def explain(
-    query: str,
-    retrieved_results: list[dict],
-    indexed_records=None
-) -> str:
-    """
-    Explain code using retrieved snippets and related functions.
-
-    Args:
-        query: User's natural-language question.
-        retrieved_results: Results returned by the retriever.
-        indexed_records: All indexed repository records.
-
-    Returns:
-        Explanation with verified source references.
-    """
+def explain(query, retrieved_results, indexed_records=None):
 
     if not query or not query.strip():
 
-        return "Please enter a question about the codebase."
+        return "Please provide a valid question."
 
     if not retrieved_results:
 
-        return (
-            "I could not find relevant code in the repository. "
-            "Try asking about a specific function, class, or feature."
-        )
-
-    # Expand retrieved results with related functions.
-    if indexed_records:
-
-        retrieved_results = expand_related_functions(
-            retrieved_results,
-            indexed_records
-        )
-
-    # Prepare evidence after expansion.
-    evidence = _prepare_evidence(retrieved_results)
-
-    print("\n========== RETRIEVED EVIDENCE ==========")
-
-    for item in evidence:
-
-        print(f"\nID: {item['id']}")
-        print(f"File: {item['file_path']}")
-        print(f"Symbol: {item['symbol']}")
-        print(f"Lines: {item['start_line']}-{item['end_line']}")
-        print("Code:")
-        print(item["code"][:1000])
-
-    print("\n========================================\n")
-
-    if not evidence:
-
-        return (
-            "The retrieved results do not contain usable code snippets."
-        )
-
-    prompt = _build_prompt(query, evidence)
+        return INSUFFICIENT_EVIDENCE
 
     try:
 
+        # Keep only records with actual implementations.
+        valid_results = [
+
+            item for item in retrieved_results
+
+            if item.get("code") and item.get("symbol")
+
+        ]
+
+        if not valid_results:
+
+            return INSUFFICIENT_EVIDENCE
+
+        # Expand related functions using actual AST calls.
+        if indexed_records is not None:
+
+            retrieved_results = expand_related_functions(
+                valid_results,
+                indexed_records
+            )
+
+        else:
+
+            retrieved_results = valid_results
+
+        # Prepare evidence with unique IDs.
+        evidence = _prepare_evidence(
+            retrieved_results
+        )
+
+        if not evidence:
+
+            return INSUFFICIENT_EVIDENCE
+
+        # Debug: display retrieved evidence.
+        print("\n========== RETRIEVED EVIDENCE ==========")
+
+        for item in evidence:
+
+            print(f"""
+ID: {item['id']}
+File: {item['file_path']}
+Symbol: {item['symbol']}
+Lines: {item['start_line']}-{item['end_line']}
+
+Code:
+{item['code']}
+""")
+
+        print("========================================\n")
+
+        # Build prompt.
+        prompt = _build_prompt(
+            query,
+            evidence
+        )
+
+        # Generate explanation.
         answer = _call_llm(prompt)
 
-        return _attach_sources(answer, evidence)
+        # Debug: display raw LLM response.
+        print("\n===== RAW LLM RESPONSE =====")
+        print(answer)
+        print("============================")
+
+        # Verify and attach citations.
+        final_answer = _attach_sources(
+            answer,
+            evidence
+        )
+
+        return final_answer
 
     except httpx.HTTPStatusError as error:
 
         return (
-            f"Featherless API error: HTTP {error.response.status_code}. "
-            "Check your model ID, API access, and account credits."
+            f"Featherless API error: "
+            f"{error.response.status_code} - "
+            f"{error.response.text[:500]}"
         )
 
-    except httpx.RequestError:
+    except httpx.RequestError as error:
 
-        return (
-            "Could not connect to the Featherless API. "
-            "Check your internet connection and try again."
-        )
+        return f"API connection error: {str(error)}"
 
     except (KeyError, IndexError, TypeError, ValueError) as error:
 
-        return f"Could not process the LLM response: {error}"
+        return (
+            f"Explanation generation error: {str(error)}"
+        )

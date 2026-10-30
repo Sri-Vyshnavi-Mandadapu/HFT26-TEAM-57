@@ -2,12 +2,13 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from .indexer import index_repository
 
 from pathlib import Path
 import tempfile
+
 from .indexer import index_repository
 from .llm import explain
+
 
 app = FastAPI(title="RepoLens AI")
 
@@ -27,17 +28,14 @@ indexed_records = []
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 
 
-# TEMPORARY FUNCTIONS
-# Replace with teammates' modules during integration.
-
-
+# TEMPORARY SEARCH FUNCTION
+# Replace with CodeRetriever during final integration.
 
 def search(query: str, records: list[dict], top_k: int = 5):
     return [
         {**record, "score": 1.0}
         for record in records[:top_k]
     ]
-
 
 
 # Request models
@@ -78,6 +76,7 @@ async def upload_repository(file: UploadFile = File(...)):
         )
 
     with tempfile.TemporaryDirectory() as temp_dir:
+
         zip_path = Path(temp_dir) / "repository.zip"
 
         content = await file.read(MAX_UPLOAD_SIZE + 1)
@@ -92,6 +91,7 @@ async def upload_repository(file: UploadFile = File(...)):
 
         try:
             records = index_repository(str(zip_path))
+
         except (ValueError, OSError) as e:
             raise HTTPException(
                 status_code=400,
@@ -114,6 +114,7 @@ async def upload_repository(file: UploadFile = File(...)):
 
 @app.post("/api/search")
 def search_repository(request: SearchRequest):
+
     if not indexed_records:
         raise HTTPException(
             status_code=400,
@@ -134,19 +135,31 @@ def search_repository(request: SearchRequest):
 
 @app.post("/api/explain")
 def explain_code(request: ExplainRequest):
+
     if not indexed_records:
         raise HTTPException(
             status_code=400,
             detail="Please index a repository first"
         )
 
-    # Only accept results that match records in our index.
+    # Verify that supplied results belong to the indexed repository
     verified = []
+
     for result in request.results:
         for record in indexed_records:
-            fields = ("file_path", "symbol", "start_line",
-                      "end_line", "code")
-            if all(result.get(k) == record.get(k) for k in fields):
+
+            fields = (
+                "file_path",
+                "symbol",
+                "start_line",
+                "end_line",
+                "code"
+            )
+
+            if all(
+                result.get(k) == record.get(k)
+                for k in fields
+            ):
                 verified.append(record)
                 break
 
@@ -161,4 +174,7 @@ def explain_code(request: ExplainRequest):
         retrieved_results=verified,
         indexed_records=indexed_records
     )
-    return {"explanation": explanation}
+
+    return {
+        "explanation": explanation
+    }
