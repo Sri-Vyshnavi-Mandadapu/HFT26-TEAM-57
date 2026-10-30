@@ -26,7 +26,7 @@ import {
 import "./App.css";
 
 const API_URL =
-  import.meta.env.VITE_API_URL || "http://localhost:8000";
+  import.meta.env.VITE_API_URL || "http://localhost:8001";
 
 async function apiRequest(path, options = {}) {
   let response;
@@ -590,7 +590,7 @@ function App() {
               <div className="index-summary">
                 <CheckCircle2 size={15} />
                 <span>
-                  Repository indexed successfully
+                  Repository ready
                 </span>
                 <span className="index-count">
                   {recordCount} records
