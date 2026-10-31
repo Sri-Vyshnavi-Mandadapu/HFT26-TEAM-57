@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Iterable
+from httpx2 import query
 import numpy as np
 
 try:
@@ -24,6 +25,15 @@ STOPWORDS = {
     "should", "please", "show", "find", "tell", "about", "me",
 }
 
+
+def normalize_query(query: str) -> str:
+    query = re.sub(
+        r"\b(logs?\s+out|logging\s+out|logged\s+out)\b",
+        "logout",
+        query,
+        flags=re.IGNORECASE
+    )
+    return query
 
 def tokenize(text: Any) -> list[str]:
     """Tokenize prose, paths, and identifiers while retaining whole names."""
@@ -190,14 +200,15 @@ class CodeRetriever:
             raise ValueError("mode must be 'hybrid', 'lexical', or 'semantic'")
 
         query = str(query).strip()
-        query_tokens = tokenize(query)
+        normalized_query = normalize_query(query)
+        query_tokens = tokenize(normalized_query)
         n = len(self.records)
         name_scores = self._scores(self.bm25_names, query_tokens, n)
         body_scores = self._scores(self.bm25_bodies, query_tokens, n)
         dense_scores = None
         if self.semantic is not None and mode in {"hybrid", "semantic"}:
             try:
-                dense_scores = np.asarray(self.semantic.search(query), dtype=float).reshape(-1)
+                dense_scores = np.asarray(self.semantic.search(normalized_query), dtype=float).reshape(-1)
                 if len(dense_scores) != n:
                     dense_scores = None
                 else:
