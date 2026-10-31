@@ -8,6 +8,8 @@ from pathlib import Path
 import tempfile
 from .llm import explain
 from .impact import build_call_graph
+import hashlib
+import json
 
 
 app = FastAPI(title="RepoLens AI")
@@ -28,7 +30,7 @@ retriever = None
 call_graph = None
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 
-
+explanation_cache = {}
 # TEMPORARY SEARCH FUNCTION
 # Replace with CodeRetriever during final integration.
 
@@ -122,6 +124,7 @@ async def upload_repository(file: UploadFile = File(...)):
         indexed_records = records
         retriever = new_retriever
         call_graph = new_graph
+        explanation_cache.clear()
 
     return {
         "message": "Repository indexed successfully",
@@ -186,14 +189,44 @@ def explain_code(request: ExplainRequest):
             detail="No verified source evidence provided"
         )
 
+        # Create a unique cache key using the query and retrieved evidence
+    cache_data = {
+        "query": request.query.strip(),
+        "evidence": [
+            {
+                "file_path": r["file_path"],
+                "symbol": r["symbol"],
+                "start_line": r["start_line"],
+                "code": r["code"]
+            }
+            for r in verified
+        ]
+    }
+
+    cache_key = hashlib.sha256(
+        json.dumps(cache_data, sort_keys=True).encode()
+    ).hexdigest()
+
+    # Return cached explanation if available
+    if cache_key in explanation_cache:
+        return {
+            "explanation": explanation_cache[cache_key],
+            "cached": True
+        }
+
+    # Generate explanation if not cached
     explanation = explain(
         query=request.query,
         retrieved_results=verified,
         indexed_records=indexed_records
     )
 
+    # Store explanation for future requests
+    explanation_cache[cache_key] = explanation
+
     return {
-        "explanation": explanation
+        "explanation": explanation,
+        "cached": False
     }
 
 
