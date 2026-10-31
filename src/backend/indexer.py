@@ -7,7 +7,7 @@ import zipfile
 from typing import Any
 
 from .parser import parse_python
-
+from .impact import extract_imports
 
 # Only Python files are supported in this MVP.
 SUPPORTED_EXTENSIONS = {".py"}
@@ -132,7 +132,10 @@ def is_symlink(info: zipfile.ZipInfo):
     return stat.S_ISLNK(unix_mode)
 
 
-def index_repository(zip_path: str) -> list[dict[str, Any]]:
+def index_repository(
+    zip_path: str,
+    file_imports: dict[str, dict] | None = None
+) -> list[dict[str, Any]]:
     """
     Index Python source code from an uploaded ZIP archive.
 
@@ -268,6 +271,8 @@ def index_repository(zip_path: str) -> list[dict[str, Any]]:
                 )
 
                 indexed_records.extend(records)
+                if file_imports is not None:
+                    file_imports[file_path] = extract_imports(content)
 
     except zipfile.BadZipFile as error:
 

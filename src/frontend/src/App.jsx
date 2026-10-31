@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Files,
   Search,
@@ -27,6 +27,8 @@ import {
 
   ShieldCheck,
 
+  Network,
+
 } from "lucide-react";
 
 import ReactMarkdown from "react-markdown";
@@ -34,6 +36,8 @@ import remarkGfm from "remark-gfm";
 import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
 import python from "react-syntax-highlighter/dist/esm/languages/prism/python";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+
+import ImpactAnalyzer from "./ImpactAnalyzer.jsx";
 
 import "./App.css";
 
@@ -146,6 +150,9 @@ function App() {
   const [activeTab, setActiveTab] = useState("explorer");
 
   const [showRepository, setShowRepository] = useState(true);
+
+  // Function handed from the code viewer to the Change Impact Analyzer.
+  const [impactTarget, setImpactTarget] = useState(null);
 
   const selectedResult = results[selectedIndex] || null;
 
@@ -407,6 +414,18 @@ function App() {
 
   }
 
+  function openImpactAnalyzer() {
+
+    if (!selectedResult) return;
+
+    setImpactTarget(selectedResult);
+
+    setActiveTab("impact");
+
+  }
+
+  const clearImpactTarget = useCallback(() => setImpactTarget(null), []);
+
   function selectResult(index) {
 
     setSelectedIndex(index);
@@ -487,6 +506,32 @@ function App() {
 
           <button
 
+            className={`activity-button ${
+
+              activeTab === "impact" ? "active" : ""
+
+            }`}
+
+            title="Change impact"
+
+            aria-label="Open change impact analyzer"
+
+            onClick={() => {
+
+              setActiveTab("impact");
+
+              setSidebarOpen(true);
+
+            }}
+
+          >
+
+            <Network size={23} />
+
+          </button>
+
+          <button
+
             className="activity-button"
 
             title="Show or hide sidebar"
@@ -531,7 +576,11 @@ function App() {
 
           <div className="side-panel-header">
 
-            {activeTab === "explorer" ? "EXPLORER" : "SEARCH"}
+            {activeTab === "explorer"
+              ? "EXPLORER"
+              : activeTab === "impact"
+              ? "CHANGE IMPACT"
+              : "SEARCH"}
 
           </div>
 
@@ -628,6 +677,23 @@ function App() {
               </p>
 
             </>
+
+          ) : activeTab === "impact" ? (
+
+            <div className="side-search">
+
+              <p className="side-help">
+                Select a function to see its direct callers,
+                dependencies and related tests, based on real
+                call relationships found in the indexed code.
+              </p>
+
+              <p className="side-help">
+                Tip: open any search result and press
+                &ldquo;Analyze change impact&rdquo;.
+              </p>
+
+            </div>
 
           ) : (
 
@@ -733,7 +799,9 @@ function App() {
 
             <span className="titlebar-divider">/</span>
 
-            <span>Code Explorer</span>
+            <span>
+              {activeTab === "impact" ? "Change Impact" : "Code Explorer"}
+            </span>
 
           </div>
 
@@ -757,13 +825,27 @@ function App() {
 
         <div className="editor-tabs">
 
-          <div className="editor-tab active">
+          <div
+            className={`editor-tab ${activeTab === "impact" ? "" : "active"}`}
+          >
 
             <Code2 size={15} />
 
             <span>Explorer</span>
 
           </div>
+
+          {activeTab === "impact" && (
+
+            <div className="editor-tab active">
+
+              <Network size={15} />
+
+              <span>Change impact</span>
+
+            </div>
+
+          )}
 
           {selectedResult && (
 
@@ -787,7 +869,21 @@ function App() {
 
         </div>
 
-        <main className="editor-content">
+        {activeTab === "impact" && (
+
+          <main className="editor-content">
+
+            <ImpactAnalyzer
+              indexed={indexed}
+              initialTarget={impactTarget}
+              onTargetConsumed={clearImpactTarget}
+            />
+
+          </main>
+
+        )}
+
+        <main className="editor-content" hidden={activeTab === "impact"}>
 
           <div className="workspace-heading">
 
@@ -1331,6 +1427,18 @@ function App() {
 
                   {selectedResult && (
 
+                    <div className="source-actions">
+
+                    <button
+                      className="impact-launch"
+                      title="See what a change to this code could affect"
+                      onClick={openImpactAnalyzer}
+                      disabled={getResultKind(selectedResult) === "Class"}
+                    >
+                      <Network size={13} />
+                      Analyze change impact
+                    </button>
+
                     <button
 
                       className="toolbar-button"
@@ -1354,6 +1462,8 @@ function App() {
                       )}
 
                     </button>
+
+                    </div>
 
                   )}
 
