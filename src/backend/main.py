@@ -7,6 +7,7 @@ from .retriever import CodeRetriever
 from pathlib import Path
 import tempfile
 from .llm import explain
+from .impact import build_call_graph
 
 
 app = FastAPI(title="RepoLens AI")
@@ -24,6 +25,7 @@ app.add_middleware(
 # Stores indexed code records
 indexed_records = []
 retriever = None
+call_graph = None
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 
 
@@ -37,6 +39,12 @@ MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1)
     top_k: int = Field(default=5, ge=1, le=20)
+
+
+class ImpactRequest(BaseModel):
+    file_path: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
+    start_line: int | None = None
 
 
 class ExplainRequest(BaseModel):
@@ -61,7 +69,7 @@ def get_status():
 
 @app.post("/api/index")
 async def upload_repository(file: UploadFile = File(...)):
-    global indexed_records, retriever
+    global indexed_records, retriever, call_graph
 
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(
@@ -83,8 +91,13 @@ async def upload_repository(file: UploadFile = File(...)):
 
         zip_path.write_bytes(content)
 
+        file_imports = {}
+
         try:
-            records = index_repository(str(zip_path))
+            records = index_repository(
+                str(zip_path),
+                file_imports=file_imports
+            )
 
         except (ValueError, OSError) as e:
             raise HTTPException(
@@ -104,8 +117,11 @@ async def upload_repository(file: UploadFile = File(...)):
             use_reranker=False
         )
 
+        new_graph = build_call_graph(records, file_imports)
+
         indexed_records = records
         retriever = new_retriever
+        call_graph = new_graph
 
     return {
         "message": "Repository indexed successfully",
@@ -179,3 +195,46 @@ def explain_code(request: ExplainRequest):
     return {
         "explanation": explanation
     }
+
+
+# Smart Change Impact Analyzer
+
+@app.get("/api/impact/functions")
+def list_impact_functions(q: str = "", limit: int = 50):
+
+    if call_graph is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload a repository first"
+        )
+
+    limit = max(1, min(limit, 200))
+
+    return {
+        "functions": call_graph.list_functions(q, limit),
+        "stats": call_graph.stats()
+    }
+
+
+@app.post("/api/impact")
+def analyze_impact(request: ImpactRequest):
+
+    if call_graph is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload a repository first"
+        )
+
+    target = call_graph.find(
+        request.file_path,
+        request.symbol,
+        request.start_line
+    )
+
+    if target is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Function not found in the indexed repository"
+        )
+
+    return call_graph.analyze(target)
